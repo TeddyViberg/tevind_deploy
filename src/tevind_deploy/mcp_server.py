@@ -16,8 +16,9 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from .config import Config
-from .core import bench, compose, deploy, dns, image, npm_api, provision, sites, sshkeys
+from .core import bench, compose, deploy, dns, image, npm_api, preflight, provision, sites, sshkeys
 from .core.config_store import ConfigStore
+from .core.npm_api import format_http_error
 from .core.runner import CommandError
 
 mcp = FastMCP("tevind-deploy")
@@ -51,6 +52,15 @@ def _guard(fn):
     try:
         return fn()
     except (CommandError, FileNotFoundError, ValueError) as exc:
+        return f"ERROR: {exc}"
+    except Exception as exc:  # noqa: BLE001 - httpx and other HTTP client errors
+        try:
+            import httpx  # type: ignore
+
+            if isinstance(exc, httpx.HTTPStatusError):
+                return f"ERROR: {format_http_error(exc)}"
+        except ImportError:
+            pass
         return f"ERROR: {exc}"
 
 
@@ -94,9 +104,22 @@ def list_sites() -> str:
 
 
 @mcp.tool()
-def list_apps(site: str) -> str:
-    """List apps installed on a running site."""
-    return _guard(lambda: bench.list_apps(_cfg(), site, capture=True).output or "(none)")
+def list_apps(site: str = "") -> str:
+    """List apps installed on a running site (defaults to the first configured site)."""
+    def _do() -> str:
+        cfg = _cfg()
+        domain = site.strip() or (cfg.sites[0].domain if cfg.sites else "")
+        if not domain:
+            raise ValueError("No site given and no sites in config.")
+        return bench.list_apps(cfg, domain, capture=True).output or "(none)"
+
+    return _guard(_do)
+
+
+@mcp.tool()
+def doctor(check_dns: bool = True) -> str:
+    """Run pre-flight checks: deps, config, secrets, NPM login, deploy keys, DNS."""
+    return _guard(lambda: preflight.run_doctor(_cfg(), check_dns=check_dns))
 
 
 @mcp.tool()
@@ -394,6 +417,38 @@ def bootstrap_sites() -> str:
 def add_site(domain: str) -> str:
     """Provision a single configured site (create + install apps + migrate)."""
     return _guard(lambda: sites.add_site(_cfg(), domain, capture=True))
+
+
+@mcp.tool()
+def remove_site(domain: str, no_backup: bool = True) -> str:
+    """Drop a site from the bench (non-interactive). Does not remove config YAML."""
+    return _guard(
+        lambda: sites.remove_site(_cfg(), domain, no_backup=no_backup, capture=True)
+    )
+
+
+@mcp.tool()
+def reconfigure(
+    domain: str = "",
+    skip_build: bool = False,
+    skip_sync: bool = False,
+    skip_dns_apply: bool = False,
+    skip_dns_verify: bool = False,
+    skip_proxy: bool = False,
+) -> str:
+    """Apply config changes: build -> up -> site(s) -> sync assets -> DNS -> proxy."""
+    return _guard(
+        lambda: deploy.reconfigure(
+            _cfg(),
+            domain.strip() or None,
+            skip_build=skip_build,
+            skip_sync=skip_sync,
+            skip_dns_apply=skip_dns_apply,
+            skip_dns_verify=skip_dns_verify,
+            skip_proxy=skip_proxy,
+            capture=True,
+        )
+    )
 
 
 @mcp.tool()

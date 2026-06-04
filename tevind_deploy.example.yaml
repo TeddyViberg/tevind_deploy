@@ -67,6 +67,8 @@ dns:
 
 # Nginx Proxy Manager. Admin login (NPM_ADMIN_EMAIL/PASSWORD) goes in .env.
 # Proxy hosts default to one per site domain, forwarding to the server IP.
+# letsencrypt_email: when set, proxy apply requests TLS. NPM 2.15+ uses the NPM
+# admin user's profile email for ACME (keep it in sync with this value).
 proxy:
   enabled: true
   letsencrypt_email: admin@tevind.com

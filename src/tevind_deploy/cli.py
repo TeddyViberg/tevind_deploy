@@ -16,7 +16,7 @@ import yaml
 
 from .config import Config
 from .config_commands import register as register_config_commands
-from .core import bench, compose, deploy, deps, image, npm_api, sites, sshkeys
+from .core import bench, compose, deploy, deps, image, npm_api, preflight, sites, sshkeys
 from .core.config_store import ConfigStore
 from .core import dns as dns_mod
 from .core import provision as provision_mod
@@ -114,41 +114,14 @@ def provision(ctx: typer.Context) -> None:
 
 
 @app.command()
-def doctor(ctx: typer.Context) -> None:
-    """Validate config + dependencies + deploy keys and report findings."""
-    typer.secho("Dependencies:", bold=True)
-    for s in deps.check():
-        typer.echo(f"  [{'ok' if s.present else 'MISSING'}] {s.name} {s.version}")
-
-    typer.secho("Config:", bold=True)
+def doctor(
+    ctx: typer.Context,
+    skip_dns: bool = typer.Option(False, "--skip-dns", help="Skip DNS verification."),
+) -> None:
+    """Validate config, dependencies, secrets, NPM login, keys, and DNS."""
     with _handle_errors():
         cfg = _load(ctx)
-    typer.echo(f"  project: {cfg.project.compose_project_name}")
-    typer.echo(f"  image:   {cfg.image.custom_image}:{cfg.image.custom_tag}")
-    typer.echo(f"  apps:    {', '.join(a.name for a in cfg.apps) or '(none)'}")
-    typer.echo(f"  sites:   {', '.join(s.domain for s in cfg.sites) or '(none)'}")
-
-    # Validate site app references exist in the image apps.
-    app_names = {a.name for a in cfg.apps}
-    for site in cfg.sites:
-        unknown = [a for a in site.apps if a not in app_names]
-        if unknown:
-            typer.secho(
-                f"  WARNING: site {site.domain} references apps not in image: "
-                f"{', '.join(unknown)}",
-                fg=typer.colors.YELLOW,
-            )
-
-    typer.secho("Deploy keys:", bold=True)
-    missing = sshkeys.check_keys(cfg)
-    if not missing:
-        typer.echo("  all configured keys present")
-    for s in missing:
-        typer.secho(f"  MISSING: {s.name} ({s.path})", fg=typer.colors.YELLOW)
-
-    for key in ("DB_ROOT_PASSWORD", "SITE_ADMIN_PASSWORD"):
-        if not cfg.env.get(key):
-            typer.secho(f"  WARNING: {key} not set in .env", fg=typer.colors.YELLOW)
+    typer.echo(preflight.run_doctor(cfg, check_dns=not skip_dns))
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +207,33 @@ def sync_assets(ctx: typer.Context) -> None:
     """Re-sync assets from the current image + flush cache + restart web."""
     with _handle_errors():
         deploy.sync_assets_release(_load(ctx))
+
+
+@app.command()
+def reconfigure(
+    ctx: typer.Context,
+    domain: Optional[str] = typer.Option(
+        None, "--domain", help="Only provision this site (must exist in config)."
+    ),
+    skip_build: bool = typer.Option(False, "--skip-build"),
+    skip_sync: bool = typer.Option(False, "--skip-sync"),
+    skip_dns_apply: bool = typer.Option(False, "--skip-dns-apply"),
+    skip_dns_verify: bool = typer.Option(False, "--skip-dns-verify"),
+    skip_proxy: bool = typer.Option(False, "--skip-proxy"),
+) -> None:
+    """Apply config changes: build -> up -> site(s) -> sync assets -> DNS -> proxy."""
+    with _handle_errors():
+        typer.echo(
+            deploy.reconfigure(
+                _load(ctx),
+                domain,
+                skip_build=skip_build,
+                skip_sync=skip_sync,
+                skip_dns_apply=skip_dns_apply,
+                skip_dns_verify=skip_dns_verify,
+                skip_proxy=skip_proxy,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +363,19 @@ def sites_migrate(ctx: typer.Context) -> None:
         sites.migrate_all(_load(ctx))
 
 
+@sites_app.command("remove")
+def sites_remove(
+    ctx: typer.Context,
+    domain: str = typer.Argument(..., help="Site domain to drop from the bench."),
+    backup: bool = typer.Option(
+        False, "--backup", help="Take a backup before dropping (default: no backup)."
+    ),
+) -> None:
+    """Drop a site from the bench (non-interactive). Does not edit tevind_deploy.yaml."""
+    with _handle_errors():
+        typer.echo(sites.remove_site(_load(ctx), domain, no_backup=not backup))
+
+
 # ---------------------------------------------------------------------------
 # apps sub-app
 # ---------------------------------------------------------------------------
@@ -461,6 +474,13 @@ def proxy_list(ctx: typer.Context) -> None:
     """List proxy hosts currently configured in NPM."""
     with _handle_errors():
         npm_api.list_hosts(_load(ctx))
+
+
+@proxy_app.command("test-login")
+def proxy_test_login(ctx: typer.Context) -> None:
+    """Verify NPM_ADMIN_EMAIL / NPM_ADMIN_PASSWORD against the NPM API."""
+    with _handle_errors():
+        typer.echo(npm_api.test_login(_load(ctx)))
 
 
 # ---------------------------------------------------------------------------

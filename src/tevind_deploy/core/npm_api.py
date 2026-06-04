@@ -10,10 +10,25 @@ The NPM stack itself is started separately via ``npm up`` (compose).
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from ..config import Config, ProxyHostConfig
 from .runner import OutputCollector
+
+
+def format_http_error(exc: Union[Exception, Any]) -> str:
+    """Turn httpx HTTP errors (or a Response) into short messages for CLI/MCP."""
+    resp = getattr(exc, "response", None)
+    if resp is None and hasattr(exc, "status_code"):
+        resp = exc
+    if resp is None:
+        return str(exc)
+    try:
+        body = resp.json()
+        msg = body.get("error", {}).get("message") or body.get("message") or resp.text
+    except Exception:  # noqa: BLE001
+        msg = resp.text or str(exc)
+    return f"NPM API {resp.status_code}: {msg}"
 
 
 def _httpx():
@@ -48,23 +63,27 @@ class NPMClient:
         resp = self._client.post(
             "/tokens", json={"identity": self._email, "secret": self._password}
         )
-        resp.raise_for_status()
+        if resp.is_error:
+            raise ValueError(format_http_error(resp))
         self._token = resp.json()["token"]
         self._client.headers["Authorization"] = f"Bearer {self._token}"
 
     def _get(self, path: str) -> Any:
         resp = self._client.get(path)
-        resp.raise_for_status()
+        if resp.is_error:
+            raise ValueError(format_http_error(resp))
         return resp.json()
 
     def _post(self, path: str, payload: dict) -> Any:
         resp = self._client.post(path, json=payload)
-        resp.raise_for_status()
+        if resp.is_error:
+            raise ValueError(format_http_error(resp))
         return resp.json()
 
     def _put(self, path: str, payload: dict) -> Any:
         resp = self._client.put(path, json=payload)
-        resp.raise_for_status()
+        if resp.is_error:
+            raise ValueError(format_http_error(resp))
         return resp.json()
 
     # -- resources -------------------------------------------------------
@@ -86,17 +105,14 @@ class NPMClient:
                 return cert
         return None
 
-    def request_letsencrypt(self, domain: str, email: str) -> dict:
+    def request_letsencrypt(self, domain: str, _letsencrypt_email: str) -> dict:
+        # NPM 2.x registers LE with the logged-in NPM admin user's email, not API meta.
         return self._post(
             "/nginx/certificates",
             {
-                "domain_names": [domain],
-                "meta": {
-                    "letsencrypt_email": email,
-                    "letsencrypt_agree": True,
-                    "dns_challenge": False,
-                },
                 "provider": "letsencrypt",
+                "domain_names": [domain],
+                "meta": {"dns_challenge": False},
             },
         )
 
@@ -116,7 +132,6 @@ def _host_payload(cfg: Config, host: ProxyHostConfig) -> dict:
         "http2_support": False,
         "hsts_enabled": False,
         "hsts_subdomains": False,
-        "meta": {"letsencrypt_agree": False, "dns_challenge": False},
         "advanced_config": "",
         "locations": [],
     }
@@ -164,9 +179,11 @@ def apply_proxy_hosts(cfg: Config, capture: bool = False) -> str:
                         cert = npm.request_letsencrypt(host.domain, cfg.proxy.letsencrypt_email)
                         out.status(f"Requested Let's Encrypt certificate for {host.domain}")
                     except Exception as exc:  # noqa: BLE001 - report and continue
+                        detail = format_http_error(exc) if hasattr(exc, "response") else str(exc)
                         out.status(
-                            f"WARNING: certificate request failed for {host.domain}: {exc}. "
-                            f"Ensure DNS resolves and port 80 is reachable, then re-run."
+                            f"WARNING: certificate request failed for {host.domain}: {detail}. "
+                            "Ensure DNS resolves, port 80 is reachable, and the NPM admin user "
+                            "has a valid email in Users. Then re-run proxy apply."
                         )
                         cert = None
                 if cert is not None:
@@ -197,3 +214,22 @@ def list_hosts(cfg: Config, capture: bool = False) -> str:
             f"[{ssl}, ws={h.get('allow_websocket_upgrade')}]"
         )
     return out.text()
+
+
+def test_login(cfg: Config) -> str:
+    """Check NPM REST API credentials (for doctor / proxy test-login)."""
+    if not cfg.proxy.enabled:
+        return "[ok] proxy.enabled=false (skipped)"
+    try:
+        cfg.require_secret("NPM_ADMIN_EMAIL")
+        cfg.require_secret("NPM_ADMIN_PASSWORD")
+    except ValueError as exc:
+        return f"[WARN] {exc}"
+    try:
+        with NPMClient(cfg):
+            pass
+        return "[ok] NPM API login succeeded"
+    except ValueError as exc:
+        return f"[MISSING] {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return f"[MISSING] NPM login failed: {exc}"

@@ -72,3 +72,21 @@ def migrate_all(cfg: Config, capture: bool = False) -> str:
         out.add(bench.migrate(cfg, site.domain, capture=capture))
     out.status("All site migrations complete.")
     return out.text()
+
+
+def remove_site(
+    cfg: Config,
+    domain: str,
+    *,
+    no_backup: bool = True,
+    capture: bool = False,
+) -> str:
+    """Remove a site from the bench (database + site directory). Does not edit YAML."""
+    out = OutputCollector(capture=capture)
+    if not bench.site_exists(cfg, domain):
+        out.status(f"Site not found on bench: {domain}")
+        return out.text()
+    out.status(f"Dropping site: {domain}")
+    out.add(bench.drop_site(cfg, domain, no_backup=no_backup, capture=out.capture))
+    out.status(f"Removed site from bench: {domain}")
+    return out.text()

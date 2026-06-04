@@ -89,3 +89,25 @@ def clear_cache(cfg: Config, site: str, capture: bool = False) -> Result:
 
 def clear_website_cache(cfg: Config, site: str, capture: bool = False) -> Result:
     return bench(cfg, site, ["clear-website-cache"], capture=capture, check=False)
+
+
+def drop_site(
+    cfg: Config,
+    site: str,
+    *,
+    no_backup: bool = True,
+    capture: bool = False,
+) -> Result:
+    """Drop a site non-interactively (uses DB_ROOT_PASSWORD from .env)."""
+    db_root = cfg.require_secret("DB_ROOT_PASSWORD")
+    args = [
+        "bench",
+        "drop-site",
+        site,
+        "--force",
+        "--mariadb-root-password",
+        db_root,
+    ]
+    if no_backup:
+        args.append("--no-backup")
+    return compose.exec_backend(cfg, args, capture=capture)

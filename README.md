@@ -106,6 +106,18 @@ NPM ships with a default admin (`admin@example.com` / `changeme`) that it forces
 you to change on first UI login (`http://<vps-ip>:81`). Do that once, then put
 the new credentials in `.env` so `proxy apply` can authenticate.
 
+Test NPM credentials before `proxy apply`:
+
+```bash
+./tevind-deploy proxy test-login
+./tevind-deploy doctor
+```
+
+**Let's Encrypt (NPM 2.15+):** set `proxy.letsencrypt_email` in YAML to enable the
+certificate step in `proxy apply`. The actual ACME registration email comes from
+the **NPM admin user's profile** (Users in the NPM UI), not the API payload —
+keep them aligned (e.g. both `teddy@tevind.com`).
+
 ### Granular commands
 
 ```bash
@@ -128,13 +140,14 @@ the new credentials in `.env` so `proxy apply` can authenticate.
 | `keys list \| check \| add NAME` | manual `ssh-add` | Manage git deploy keys |
 | `build` | `make build-image` | Build the custom image |
 | `up \| down \| ps \| logs \| restart` | `make up/down/ps/logs` | Stack lifecycle |
-| `sites bootstrap \| add DOMAIN \| migrate \| list` | `make bootstrap-sites/add-site/migrate` | Site provisioning |
+| `sites bootstrap \| add DOMAIN \| remove DOMAIN \| migrate \| list` | `make bootstrap-sites/add-site/migrate` | Site provisioning |
+| `reconfigure [--domain X]` | manual step chain | After config/app changes: build → up → sites → assets → DNS → proxy |
 | `apps list --site X \| install --site X --app Y` | manual bench | Per-site app ops |
 | `deploy-refresh` | `make deploy-refresh` | Build + up + migrate + sync assets |
 | `sync-assets` | `make sync-assets` | Re-sync assets from current image |
 | `npm up \| down \| ps \| logs` | `make npm-*` | Nginx Proxy Manager stack |
 | `dns apply \| verify \| list` | manual `dig` | OVH DNS A/AAAA records |
-| `proxy apply \| list` | manual NPM UI | NPM proxy hosts + Let's Encrypt (REST API) |
+| `proxy apply \| list \| test-login` | manual NPM UI | NPM proxy hosts + Let's Encrypt (REST API) |
 | `mcp serve` | — | Start the MCP server (stdio) |
 
 Global options: `--root`, `--config`, `--env` (default to the current directory
@@ -184,10 +197,19 @@ still writes PEM files to disk; `config ssh-keys add` only updates YAML metadata
 ./tevind-deploy config section set server ip_address '"137.74.114.233"'
 ./tevind-deploy config set image.custom_tag f16-dev-2026-06-04
 
-# 5) Deploy
-./tevind-deploy build && ./tevind-deploy up
-./tevind-deploy sites add dev.tevind.com
-./tevind-deploy dns apply && ./tevind-deploy proxy apply
+# 5) Deploy (or one command after config is ready)
+./tevind-deploy reconfigure --domain dev.tevind.com
+# equivalent manual steps:
+# ./tevind-deploy build && ./tevind-deploy up
+# ./tevind-deploy sites add dev.tevind.com
+# ./tevind-deploy sync-assets && ./tevind-deploy dns apply && ./tevind-deploy proxy apply
+```
+
+To remove an old bench site (e.g. IP-named test site) without touching YAML:
+
+```bash
+./tevind-deploy sites remove 137.74.114.233
+./tevind-deploy config sites remove 137.74.114.233   # optional: drop from config
 ```
 
 Python API (same logic as CLI/MCP):
@@ -229,25 +251,67 @@ Guardrails (carried over from `frappe_deploy`):
 
 `proxy apply` creates/updates one proxy host per domain forwarding to
 `http://<server.ip_address>:<frontend_port>` with websocket upgrade enabled,
-then requests a Let's Encrypt certificate and forces SSL. The first run requires
-the NPM admin credentials in `.env` (see "Full provisioning from 0").
+then requests a Let's Encrypt certificate (when `proxy.letsencrypt_email` is set)
+and forces SSL. Requires NPM admin credentials in `.env` (see above).
 
 You can still manage hosts manually in the NPM UI if you prefer; `proxy apply`
 is idempotent and updates existing hosts in place.
 
 ## MCP server (agent control)
 
+Run the MCP server **on the VPS** (same directory as `tevind_deploy.yaml`):
+
 ```bash
+cd ~/tevind_deploy
 ./tevind-deploy mcp serve
 ```
 
-Exposes tools backed by the same core functions: `get_config`, `list_sites`,
-`list_apps`, `check_keys`, `add_key`, `build_image`, `deploy_refresh`,
-`sync_assets`, `bootstrap_sites`, `add_site`, `migrate_all`, `stack_up`,
-`stack_down`, `ps`, provisioning tools (`provision_host`, `dns_apply`, `proxy_apply`,
+### Cursor IDE (stdio over SSH)
+
+Add to your user MCP config (e.g. `~/.cursor/mcp.json` on your laptop). Replace
+`lekserver` and the path with your SSH host alias and deploy directory:
+
+```json
+{
+  "mcpServers": {
+    "tevind-deploy-lekserver": {
+      "command": "ssh",
+      "args": [
+        "-o", "BatchMode=yes",
+        "lekserver",
+        "cd ~/tevind_deploy && ./tevind-deploy mcp serve"
+      ]
+    }
+  }
+}
+```
+
+Use one MCP entry per server/environment. Long-running tools (`build_image`,
+`reconfigure`) may hit client timeouts; prefer stepwise calls or plain SSH CLI
+for multi-minute builds.
+
+### Recommended agent workflow
+
+1. `doctor` — dependencies, secrets, NPM login, deploy keys, DNS
+2. `config_*` — update `apps:` / `sites:` in YAML
+3. `reconfigure` or `build_image` → `stack_up` → `add_site` / `bootstrap_sites`
+4. `dns_verify` (or `dns_apply` if OVH credentials are set)
+5. `proxy_apply`
+6. `list_apps` — confirm installed apps on the site
+
+Exposes tools backed by the same core functions: `doctor`, `get_config`,
+`list_sites`, `list_apps`, `check_keys`, `add_key`, `build_image`,
+`deploy_refresh`, `reconfigure`, `sync_assets`, `bootstrap_sites`, `add_site`,
+`remove_site`, `migrate_all`, `stack_up`, `stack_down`, `ps`, provisioning tools
+(`provision_host`, `dns_apply`, `dns_verify`, `proxy_apply`, `list_proxy_hosts`,
 `bootstrap_all`), and **config CRUD** tools (`config_apps_*`, `config_sites_*`,
 `config_site_apps_*`, `config_ssh_keys_*`, `config_section_*`). Missing deploy
 keys can be supplied at runtime via `add_key`.
+
+**SSH without MCP:** `./tevind-deploy` on the server works the same; agents often
+use `ssh host 'cd ~/tevind_deploy && ./tevind-deploy …'`. Do not `source .env` in
+bash if passwords contain `*`, `}`, or `~` — the CLI reads `.env` safely via its
+own parser.
 
 ## Migration notes from frappe_deploy
 
