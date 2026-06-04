@@ -144,21 +144,61 @@ Global options: `--root`, `--config`, `--env` (default to the current directory
 
 `apps:` lists every app baked into the image (rendered to `apps.json` at build
 time). `sites:` maps each domain to the apps to install on it. Every app a site
-references must exist in `apps:` (and therefore in the built image):
+references must exist in `apps:` (and therefore in the built image).
 
-```yaml
-apps:
-  - name: erpnext
-    url: https://github.com/frappe/erpnext.git
-    branch: version-16
-  - name: tevind_app
-    url: git@github.com-tevind:TeddyViberg/tevind_frappe.git
-    branch: main
-    deploy_key: tevind_deploy_key
+You can edit the YAML by hand **or** use the programmatic API (CLI / MCP), which
+validates and saves automatically.
 
-sites:
-  - domain: tevind.com
-    apps: [tevind_app]
+### Config CRUD (CLI)
+
+| Resource | Commands | Key |
+| -------- | -------- | --- |
+| Image apps | `config apps list\|get\|add\|set\|remove` | app `name` |
+| Sites | `config sites list\|get\|add\|set\|remove` | `domain` |
+| Site install list | `config site-apps list\|get\|add\|set\|remove` | `domain` + `--app` |
+| Deploy key metadata | `config ssh-keys list\|get\|add\|set\|remove` | key `name` |
+| NPM overrides | `config proxy-hosts list\|get\|add\|set\|remove` | `domain` |
+| Scalar settings | `config section get\|set`, or `config set image.custom_tag …` | `server`, `image`, `dns`, `proxy`, … |
+
+Add `--json` on read commands for machine-readable output. Top-level `keys add`
+still writes PEM files to disk; `config ssh-keys add` only updates YAML metadata.
+
+**Example: only `dev.tevind.com` with two private apps**
+
+```bash
+# 1) SSH key entries (then: keys add <name> with PEM from stdin)
+./tevind-deploy config ssh-keys add myapp1_deploy_key --host-alias github.com-myapp1
+./tevind-deploy config ssh-keys add myapp2_deploy_key --host-alias github.com-myapp2
+
+# 2) Apps in the image
+./tevind-deploy config apps add tevind_app \
+  --url git@github.com-myapp1:Org/repo_one.git --branch main --deploy-key myapp1_deploy_key
+./tevind-deploy config apps add other_app \
+  --url git@github.com-myapp2:Org/repo_two.git --branch main --deploy-key myapp2_deploy_key
+
+# 3) Single site (replace any old sites first)
+./tevind-deploy config sites remove 137.74.114.233   # if present
+./tevind-deploy config sites add dev.tevind.com --apps tevind_app,other_app
+
+# 4) Server IP + new image tag
+./tevind-deploy config section set server ip_address '"137.74.114.233"'
+./tevind-deploy config set image.custom_tag f16-dev-2026-06-04
+
+# 5) Deploy
+./tevind-deploy build && ./tevind-deploy up
+./tevind-deploy sites add dev.tevind.com
+./tevind-deploy dns apply && ./tevind-deploy proxy apply
+```
+
+Python API (same logic as CLI/MCP):
+
+```python
+from tevind_deploy.core.config_store import ConfigStore
+
+store = ConfigStore.load("/home/ubuntu/tevind_deploy")
+store.apps_add("tevind_app", "git@github.com-tevind:Org/repo.git", "main", "myapp1_deploy_key")
+store.sites_add("dev.tevind.com", ["tevind_app", "other_app"])
+store.save()
 ```
 
 ## Release flow (new app code, keep DB + sites)
@@ -204,9 +244,10 @@ is idempotent and updates existing hosts in place.
 Exposes tools backed by the same core functions: `get_config`, `list_sites`,
 `list_apps`, `check_keys`, `add_key`, `build_image`, `deploy_refresh`,
 `sync_assets`, `bootstrap_sites`, `add_site`, `migrate_all`, `stack_up`,
-`stack_down`, `ps`, plus full-provisioning tools `provision_host`, `dns_apply`,
-`dns_verify`, `proxy_apply`, `list_proxy_hosts`, and `bootstrap_all`. Missing
-deploy keys can be supplied at runtime via `add_key`.
+`stack_down`, `ps`, provisioning tools (`provision_host`, `dns_apply`, `proxy_apply`,
+`bootstrap_all`), and **config CRUD** tools (`config_apps_*`, `config_sites_*`,
+`config_site_apps_*`, `config_ssh_keys_*`, `config_section_*`). Missing deploy
+keys can be supplied at runtime via `add_key`.
 
 ## Migration notes from frappe_deploy
 

@@ -9,6 +9,7 @@ Start with: ``tevind-deploy mcp serve``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import Config
 from .core import bench, compose, deploy, dns, image, npm_api, provision, sites, sshkeys
+from .core.config_store import ConfigStore
 from .core.runner import CommandError
 
 mcp = FastMCP("tevind-deploy")
@@ -30,6 +32,18 @@ def _cfg() -> Config:
         _STATE.get("config"),  # type: ignore[arg-type]
         _STATE.get("env"),  # type: ignore[arg-type]
     )
+
+
+def _store() -> ConfigStore:
+    return ConfigStore.load(
+        _STATE["root"],  # type: ignore[arg-type]
+        _STATE.get("config"),  # type: ignore[arg-type]
+        _STATE.get("env"),  # type: ignore[arg-type]
+    )
+
+
+def _j(data: object) -> str:
+    return json.dumps(data, indent=2)
 
 
 def _guard(fn):
@@ -101,6 +115,243 @@ def check_keys() -> str:
 def ps() -> str:
     """Show the Frappe stack service status."""
     return _guard(lambda: compose.ps(_cfg(), capture=True).output)
+
+
+# ---------------------------------------------------------------------------
+# Config CRUD (tevind_deploy.yaml via ConfigStore)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def config_apps_list() -> str:
+    """List apps in config (image bake list)."""
+    return _guard(lambda: _j(_store().apps_list()))
+
+
+@mcp.tool()
+def config_apps_get(name: str) -> str:
+    """Get one app entry by Frappe app name."""
+    return _guard(lambda: _j(_store().apps_get(name)))
+
+
+@mcp.tool()
+def config_apps_add(
+    name: str,
+    url: str,
+    branch: str = "version-16",
+    deploy_key: str = "",
+) -> str:
+    """Add an app to config and save. deploy_key empty = public repo."""
+    def _do() -> str:
+        store = _store()
+        dk = deploy_key or None
+        result = store.apps_add(name, url, branch, dk)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_apps_set(
+    name: str,
+    url: str = "",
+    branch: str = "",
+    deploy_key: str = "",
+) -> str:
+    """Update app fields (omit empty strings to leave unchanged). Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.apps_set(
+            name,
+            url=url or None,
+            branch=branch or None,
+            deploy_key=deploy_key or None,
+        )
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_apps_remove(name: str) -> str:
+    """Remove an app from config (and from all site app lists). Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.apps_remove(name)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_sites_list() -> str:
+    """List sites in config."""
+    return _guard(lambda: _j(_store().sites_list()))
+
+
+@mcp.tool()
+def config_sites_get(domain: str) -> str:
+    """Get one site entry by domain."""
+    return _guard(lambda: _j(_store().sites_get(domain)))
+
+
+@mcp.tool()
+def config_sites_add(domain: str, apps: str = "") -> str:
+    """Add a site. apps: comma-separated Frappe app names. Saves config."""
+    def _do() -> str:
+        store = _store()
+        app_list = [a.strip() for a in apps.split(",") if a.strip()] if apps else []
+        result = store.sites_add(domain, app_list)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_sites_set(domain: str, apps: str = "", rename: str = "") -> str:
+    """Update site (apps comma-separated, optional rename). Saves config."""
+    def _do() -> str:
+        store = _store()
+        app_list = None
+        if apps:
+            app_list = [a.strip() for a in apps.split(",") if a.strip()]
+        result = store.sites_set(domain, apps=app_list, new_domain=rename or None)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_sites_remove(domain: str) -> str:
+    """Remove a site from config. Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.sites_remove(domain)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_site_apps_get(domain: str) -> str:
+    """List apps configured for a site."""
+    return _guard(lambda: _j(_store().site_apps_get(domain)))
+
+
+@mcp.tool()
+def config_site_apps_add(domain: str, app: str) -> str:
+    """Add one app to a site's install list. Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.site_apps_add(domain, app)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_site_apps_remove(domain: str, app: str) -> str:
+    """Remove one app from a site's install list. Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.site_apps_remove(domain, app)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_site_apps_set(domain: str, apps: str) -> str:
+    """Replace a site's app list (comma-separated). Saves config."""
+    def _do() -> str:
+        store = _store()
+        app_list = [a.strip() for a in apps.split(",") if a.strip()]
+        result = store.site_apps_set(domain, app_list)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_ssh_keys_list() -> str:
+    """List ssh_keys entries in config (not key files on disk)."""
+    return _guard(lambda: _j(_store().ssh_keys_list()))
+
+
+@mcp.tool()
+def config_ssh_keys_get(name: str) -> str:
+    """Get one ssh_keys config entry."""
+    return _guard(lambda: _j(_store().ssh_keys_get(name)))
+
+
+@mcp.tool()
+def config_ssh_keys_add(
+    name: str,
+    path: str = "",
+    host_alias: str = "",
+    hostname: str = "github.com",
+) -> str:
+    """Add deploy key metadata to config. Use add_key for the PEM file. Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.ssh_keys_add(
+            name, path, host_alias or None, hostname
+        )
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_ssh_keys_set(
+    name: str,
+    path: str = "",
+    host_alias: str = "",
+    hostname: str = "",
+) -> str:
+    """Update ssh_keys entry (empty strings = leave unchanged). Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.ssh_keys_set(
+            name,
+            path=path or None,
+            host_alias=host_alias or None,
+            hostname=hostname or None,
+        )
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_ssh_keys_remove(name: str) -> str:
+    """Remove ssh_keys entry from config. Saves config."""
+    def _do() -> str:
+        store = _store()
+        result = store.ssh_keys_remove(name)
+        store.save()
+        return _j(result)
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_section_set(section: str, field: str, value: str) -> str:
+    """Set a scalar field (server.ip_address, image.custom_tag, proxy.enabled, …). value is YAML."""
+    def _do() -> str:
+        import yaml
+
+        store = _store()
+        parsed = yaml.safe_load(value)
+        result = store.section_set(section, field, parsed)
+        store.save()
+        return _j({f"{section}.{field}": result})
+    return _guard(_do)
+
+
+@mcp.tool()
+def config_section_get(section: str, field: str = "") -> str:
+    """Get a config section or one field (project, server, image, stack, deploy, dns, proxy)."""
+    return _guard(
+        lambda: _j(_store().section_get(section, field or None))
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,9 @@ import typer
 import yaml
 
 from .config import Config
+from .config_commands import register as register_config_commands
 from .core import bench, compose, deploy, deps, image, npm_api, sites, sshkeys
+from .core.config_store import ConfigStore
 from .core import dns as dns_mod
 from .core import provision as provision_mod
 from .core.runner import CommandError
@@ -44,6 +46,8 @@ app.add_typer(dns_app, name="dns")
 app.add_typer(proxy_app, name="proxy")
 app.add_typer(mcp_app, name="mcp")
 
+register_config_commands(config_app)
+
 
 # ---------------------------------------------------------------------------
 # Shared state + helpers
@@ -71,7 +75,7 @@ def _load(ctx: typer.Context) -> Config:
 def _handle_errors():
     try:
         yield
-    except (CommandError, FileNotFoundError, ValueError) as exc:
+    except (CommandError, FileNotFoundError, ValueError, KeyError) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
@@ -257,25 +261,16 @@ def config_set(
     key: str = typer.Argument(..., help="Dotted path, e.g. image.custom_tag"),
     value: str = typer.Argument(...),
 ) -> None:
-    """Set a dotted config key (rewrites YAML; comments are not preserved)."""
-    o = ctx.obj or {}
-    root = o["root"]
-    cfg_file = Path(o["config"]) if o.get("config") else Path(root) / "tevind_deploy.yaml"
+    """Set a scalar section.field (e.g. image.custom_tag). Use config apps/sites for lists."""
     with _handle_errors():
-        if not cfg_file.exists():
-            raise FileNotFoundError(f"Config file not found: {cfg_file}")
-        data = yaml.safe_load(cfg_file.read_text()) or {}
+        store = ConfigStore.load(
+            (ctx.obj or {})["root"],
+            (ctx.obj or {}).get("config"),
+            (ctx.obj or {}).get("env"),
+        )
         parsed = yaml.safe_load(value)
-        node = data
-        parts = key.split(".")
-        for p in parts[:-1]:
-            node = node.setdefault(p, {})
-            if not isinstance(node, dict):
-                raise ValueError(f"Cannot set '{key}': '{p}' is not a mapping.")
-        node[parts[-1]] = parsed
-        # Validate before persisting.
-        Config(**data)
-        cfg_file.write_text(yaml.safe_dump(data, sort_keys=False))
+        store.section_set_dotted(key, parsed)
+        store.save()
     typer.secho(f"Set {key} = {parsed!r}", fg=typer.colors.GREEN)
 
 
