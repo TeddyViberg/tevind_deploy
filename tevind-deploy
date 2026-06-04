@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Wrapper so the CLI can be called over SSH without activating the venv:
+#   ~/tevind_deploy/tevind-deploy <command>
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ -x "${DIR}/.venv/bin/tevind-deploy" ]]; then
+  exec "${DIR}/.venv/bin/tevind-deploy" "$@"
+fi
+
+# Fallback: run as a module from the source tree.
+exec python3 -m tevind_deploy.cli "$@"

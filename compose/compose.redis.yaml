@@ -1,0 +1,16 @@
+services:
+  redis-cache:
+    image: redis:7.2-alpine
+    restart: ${RESTART_POLICY:-unless-stopped}
+    volumes:
+      - redis-cache-data:/data
+
+  redis-queue:
+    image: redis:7.2-alpine
+    restart: ${RESTART_POLICY:-unless-stopped}
+    volumes:
+      - redis-queue-data:/data
+
+volumes:
+  redis-cache-data:
+  redis-queue-data:

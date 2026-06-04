@@ -1,0 +1,118 @@
+# tevind_deploy configuration (source of truth for the deployment).
+# Copy to tevind_deploy.yaml and edit. Secrets (passwords) go in .env, not here.
+
+project:
+  compose_project_name: tevind          # Docker project name / volume prefix
+  project_path_on_host: /home/ubuntu/tevind_deploy
+  frontend_port: 8080                   # reverse proxy upstream port
+
+# Target VPS. Used by `provision`, DNS A records and the NPM upstream.
+server:
+  ip_address: ""                        # public IPv4 (REQUIRED for dns/proxy)
+  ipv6_address: ""                      # optional, for AAAA records
+  ssh_user: ubuntu
+  os_version: Ubuntu 24.04
+  provider: OVH
+  use_sudo: true                        # run privileged steps via sudo
+  swap_size_gb: 2
+  swappiness: 10
+  ufw_allow_ports: [22, 80, 443]
+  base_packages: [ca-certificates, curl, git, rsync, openssh-client, ufw, jq]
+
+image:
+  custom_image: ghcr.io/your-org/frappe-custom
+  custom_tag: f16-develop-py314-node24  # bump per release for traceability
+  mariadb_image: mariadb:11.8
+  pull_policy: if_not_present
+  restart_policy: unless-stopped
+  frappe_docker_repo: https://github.com/frappe/frappe_docker.git
+  frappe_docker_ref: v2.2.0
+  frappe_path: https://github.com/frappe/frappe.git
+  frappe_branch: version-16
+  python_version: 3.14.2
+  node_version: 24.13.0
+  containerfile: containerfiles/Containerfile.custom.ssh
+  force_no_cache: true
+  force_pull: true
+
+stack:
+  db_host: db
+  db_port: 3306
+  redis_cache: redis-cache:6379
+  redis_queue: redis-queue:6379
+  frappe_site_name_header: $host
+  upstream_real_ip_address: 127.0.0.1
+  upstream_real_ip_header: X-Forwarded-For
+  upstream_real_ip_recursive: "off"
+  proxy_read_timeout: 120
+  client_max_body_size: 50m
+  tz: Europe/Stockholm
+  npm_admin_port: 81
+
+deploy:
+  auto_up: true
+  auto_migrate: true
+  auto_sync_assets: true
+  auto_flush_redis_cache_after_sync: true   # FLUSHDB on redis-cache only
+  auto_restart_after_assets: true
+  restart_services: [backend, frontend, websocket]
+
+# OVH DNS. Credentials (OVH_APPLICATION_KEY/SECRET, OVH_CONSUMER_KEY) go in .env.
+dns:
+  provider: ovh
+  endpoint: ovh-eu
+  ttl: 3600
+  manage_ipv6: false
+  zones: []                             # auto-detected from OVH if empty
+
+# Nginx Proxy Manager. Admin login (NPM_ADMIN_EMAIL/PASSWORD) goes in .env.
+# Proxy hosts default to one per site domain, forwarding to the server IP.
+proxy:
+  enabled: true
+  letsencrypt_email: admin@tevind.com
+  force_ssl: true
+  http2: true
+  hsts: false
+  websockets: true
+  block_exploits: true
+  forward_host: ""                      # default: server.ip_address
+  forward_port: 0                       # default: project.frontend_port
+  hosts: []                             # optional per-domain overrides
+
+# Git deploy keys used at build time to clone private repos.
+# The key file content is never committed; place it under `path` (or use
+# `tevind-deploy keys add`). `host_alias` is matched by the app url below.
+ssh_keys:
+  - name: tevind_deploy_key
+    path: ~/.ssh/tevind_deploy_key
+    host_alias: github.com-tevind
+    hostname: github.com
+  - name: autospine_deploy_key
+    path: ~/.ssh/autospine_deploy_key
+    host_alias: github.com-autospine
+    hostname: github.com
+
+# Apps baked into the image. `name` is the Frappe app name (used by
+# install-app); `url`/`branch` are written to apps.json for the build.
+apps:
+  - name: erpnext
+    url: https://github.com/frappe/erpnext.git
+    branch: version-16
+  - name: tevind_app
+    url: git@github.com-tevind:TeddyViberg/tevind_frappe.git
+    branch: main
+    deploy_key: tevind_deploy_key
+  - name: sealstrap7_app
+    url: git@github.com-autospine:TeddyViberg/autospine_frappe.git
+    branch: main
+    deploy_key: autospine_deploy_key
+
+# Per-site app install lists (replaces hardcoded apps_for_site in bash).
+# Every app referenced here must exist in `apps` (and thus in the built image).
+sites:
+  - domain: tevind.com
+    apps: [tevind_app]
+  - domain: staging.autospine.eu
+    apps: [erpnext, sealstrap7_app]
+  - domain: autospine.eu
+    apps: [erpnext, sealstrap7_app]

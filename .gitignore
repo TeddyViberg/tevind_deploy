@@ -1,0 +1,32 @@
+# Local config and secrets (examples are committed)
+.env
+tevind_deploy.yaml
+
+# Python / install
+.venv/
+.vendor/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Generated at runtime
+.generated/
+apps.json
+*.log
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

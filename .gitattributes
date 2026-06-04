@@ -1,0 +1,11 @@
+* text=auto
+
+*.sh text eol=lf
+*.conf text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+tevind-deploy text eol=lf
+Containerfile.* text eol=lf
+compose*.yaml text eol=lf

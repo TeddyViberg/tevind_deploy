@@ -1,0 +1,74 @@
+ARG FRAPPE_BRANCH=version-16
+
+FROM frappe/build:${FRAPPE_BRANCH} AS builder
+
+ARG FRAPPE_BRANCH=version-16
+ARG FRAPPE_PATH=https://github.com/frappe/frappe
+ARG APPS_JSON_BASE64
+
+USER root
+
+RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
+  mkdir /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
+fi
+
+# Ensure SSH client exists in builder for git@github.com clone URLs.
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
+
+USER frappe
+
+# Patch: Forward VPS SSH agent to allow cloning private repos during `bench init`.
+RUN --mount=type=ssh \
+  --mount=type=secret,id=build_ssh_config,required=true,uid=1000,gid=1000,mode=0444 \
+  --mount=type=secret,id=build_known_hosts,required=true,uid=1000,gid=1000,mode=0444 \
+# >>> TEVIND_SSH_SECRET_MOUNTS <<<
+  export APP_INSTALL_ARGS="" && \
+  if [ -n "${APPS_JSON_BASE64}" ]; then \
+    export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
+  fi && \
+  export GIT_SSH_COMMAND="ssh -F /run/secrets/build_ssh_config -o UserKnownHostsFile=/run/secrets/build_known_hosts -o StrictHostKeyChecking=yes" && \
+  bench init ${APP_INSTALL_ARGS}\
+    --frappe-branch=${FRAPPE_BRANCH} \
+    --frappe-path=${FRAPPE_PATH} \
+    --no-procfile \
+    --no-backups \
+    --skip-redis-config-generation \
+    --verbose \
+  /home/frappe/frappe-bench && \
+  cd /home/frappe/frappe-bench && \
+  echo "{}" > sites/common_site_config.json && \
+  find apps -mindepth 1 -path "*/.git" | xargs rm -fr && \
+  bench build && \
+  cp -a sites/assets /home/frappe/frappe-asset-snapshot
+
+FROM frappe/base:${FRAPPE_BRANCH} AS backend
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends rsync \
+ && rm -rf /var/lib/apt/lists/*
+
+USER frappe
+
+COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
+COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-asset-snapshot /opt/frappe-asset-snapshot
+
+WORKDIR /home/frappe/frappe-bench
+
+VOLUME [ \
+ "/home/frappe/frappe-bench/sites", \
+ "/home/frappe/frappe-bench/logs" \
+]
+
+CMD [ \
+  "/home/frappe/frappe-bench/env/bin/gunicorn", \
+  "--chdir=/home/frappe/frappe-bench/sites", \
+  "--bind=0.0.0.0:8000", \
+  "--threads=4", \
+  "--workers=2", \
+  "--worker-class=gthread", \
+  "--worker-tmp-dir=/dev/shm", \
+  "--timeout=120", \
+  "--preload", \
+  "frappe.app:application" \
+]
